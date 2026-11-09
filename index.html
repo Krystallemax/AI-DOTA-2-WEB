@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Dota 2 Assistant</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#10141c;color:#e8edf5;font-family:Arial,sans-serif;padding:18px}
+main{max-width:850px;margin:auto}
+h1{color:#e9a441;text-align:center}
+.card{background:#1b2330;padding:16px;border-radius:12px;margin:14px 0}
+label{display:block;margin:12px 0 6px}
+select,input,button{width:100%;padding:12px;border-radius:8px;border:1px solid #39465a;background:#111925;color:white;font-size:15px}
+button{background:#bd7130;border:0;font-weight:bold;margin-top:15px}
+button:disabled{opacity:.5}
+.small{color:#aab5c5;font-size:13px}
+.result{padding:12px;background:#111925;border-radius:8px;margin:10px 0}
+.good{color:#70d69a}
+.bad{color:#ff8a8a}
+</style>
+</head>
+<body>
+<main>
+<h1>AI DOTA 2 ASSISTANT</h1>
+<p style="text-align:center">Анализ драфта • Все ранги • OpenDota</p>
+
+<div class="card">
+<h3>1. Настройки матча</h3>
+<label>Ранг</label>
+<select id="rank">
+<option value="all">Все ранги</option>
+<option value="1">Рекрут</option>
+<option value="2">Страж</option>
+<option value="3">Рыцарь</option>
+<option value="4">Герой</option>
+<option value="5">Легенда</option>
+<option value="6">Властелин</option>
+<option value="7">Божество</option>
+<option value="8">Титан</option>
+</select>
+
+<label>Твоя позиция</label>
+<select id="role">
+<option value="1">1 — Керри</option>
+<option value="2">2 — Мид</option>
+<option value="3">3 — Оффлейн</option>
+<option value="4">4 — Полусаппорт</option>
+<option value="5">5 — Саппорт</option>
+</select>
+</div>
+
+<div class="card">
+<h3>2. Пики команды</h3>
+<label>Союзники (английские названия через запятую)</label>
+<input id="allies" placeholder="Axe, Lion, Shadow Fiend">
+<label>Противники</label>
+<input id="enemies" placeholder="Juggernaut, Puck, Lion">
+</div>
+
+<div class="card">
+<button id="analyze" onclick="analyze()">АНАЛИЗИРОВАТЬ ПИК</button>
+<p id="status" class="small"></p>
+<div id="results"></div>
+</div>
+</main>
+
+<script>
+const API="https://api.opendota.com/api";
+let heroes=[];
+
+async function loadHeroes(){
+ const r=await fetch(API+"/heroStats");
+ if(!r.ok) throw Error("OpenDota недоступен");
+ heroes=await r.json();
+}
+
+function findHero(name){
+ return heroes.find(h=>
+  h.localized_name.toLowerCase()===name.trim().toLowerCase()||
+  h.name.toLowerCase()===name.trim().toLowerCase()
+ );
+}
+
+function rankStats(h,rank){
+ if(rank==="all"){
+  let games=0,wins=0;
+  for(let i=1;i<=8;i++){
+   games+=Number(h[i+"_pick"]||0);
+   wins+=Number(h[i+"_win"]||0);
+  }
+  return {games,wins};
+ }
+ return {
+  games:Number(h[rank+"_pick"]||0),
+  wins:Number(h[rank+"_win"]||0)
+ };
+}
+
+async function analyze(){
+ const btn=document.getElementById("analyze");
+ const status=document.getElementById("status");
+ const output=document.getElementById("results");
+ btn.disabled=true;
+ output.innerHTML="";
+ status.textContent="Загружаю статистику OpenDota...";
+
+ try{
+  if(!heroes.length) await loadHeroes();
+
+  const rank=document.getElementById("rank").value;
+  const role=document.getElementById("role").value;
+  const allies=document.getElementById("allies").value.split(",").map(x=>x.trim()).filter(Boolean);
+  const enemies=document.getElementById("enemies").value.split(",").map(x=>x.trim()).filter(Boolean);
+
+  const enemyHeroes=enemies.map(findHero).filter(Boolean);
+  const allyHeroes=allies.map(findHero).filter(Boolean);
+
+  if(enemies.length&&!enemyHeroes.length) throw Error("Не удалось распознать противников. Используй английские названия.");
+  if(allies.length&&!allyHeroes.length) throw Error("Не удалось распознать союзников. Проверь английские названия.");
+
+  status.textContent="Анализирую героев и матчапы...";
+
+  const candidates=heroes.filter(h=>!allyHeroes.some(a=>a.id===h.id)&&!enemyHeroes.some(e=>e.id===h.id));
+  const results=[];
+
+  for(const h of candidates){
+   const stats=rankStats(h,rank);
+   if(stats.games<10) continue;
+
+   const winrate=stats.wins/stats.games*100;
+   let matchup=0;
+   let count=0;
+
+   for(const enemy of enemyHeroes){
+    try{
+     const r=await fetch(API+"/heroes/"+enemy.id+"/matchups");
+     if(!r.ok) continue;
+     const data=await r.json();
+     const m=data.find(x=>x.hero_id===h.id);
+     if(m&&m.games_played>0){
+      matchup+=(m.games_played-m.wins)/m.games_played*100;
+      count++;
+     }
+    }catch(e){}
+   }
+
+   if(count) matchup/=count;
+   else matchup=50;
+
+   let roleScore=50;
+   const roles=h.roles||[];
+   const preferred={
+    1:["Carry"],
+    2:["Carry","Nuker","Escape"],
+    3:["Initiator","Durable","Disabler"],
+    4:["Support","Disabler","Nuker"],
+    5:["Support","Disabler"]
+   }[role];
+
+   roleScore=roles.some(x=>preferred.includes(x))?100:35;
+
+   const score=winrate*.35+matchup*.35+roleScore*.30;
+
+   results.push({hero:h,winrate,matchup,score,games:stats.games});
+  }
+
+  results.sort((a,b)=>b.score-a.score);
+  const top=results.slice(0,5);
+
+  if(!top.length){
+   output.innerHTML="Недостаточно статистики для выбранного ранга.";
+  }else{
+   output.innerHTML=top.map((x,i)=>`
+    <div class="result">
+     <h3>${i+1}. ${x.hero.localized_name}</h3>
+     <p>Общий рейтинг: <b>${x.score.toFixed(1)}</b></p>
+     <p>Винрейт: <span class="good">${x.winrate.toFixed(2)}%</span></p>
+     <p>Матчап против врагов: ${x.matchup.toFixed(2)}%</p>
+     <p>Выборок: ${x.games}</p>
+    </div>
+   `).join("");
+  }
+
+  status.textContent="Анализ завершён. Данные OpenDota.";
+ }catch(e){
+  status.textContent="Ошибка: "+e.message;
+ }finally{
+  btn.disabled=false;
+ }
+}
+</script>
+</body>
+</html>
